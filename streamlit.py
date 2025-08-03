@@ -2,6 +2,15 @@
 
 import os
 import streamlit as st
+import asyncio  # 👈 Added to fix event loop issue on Streamlit Cloud
+
+# Ensure asyncio event loop is available
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
 from typing import List, Dict, Optional
 
 # --- FAISS Imports ---
@@ -21,12 +30,14 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 
 # Configuration
 BASE_DOC_PATH = './docs'
-BASE_DB = './db' # Now acts as a base folder for FAISS index files
+BASE_DB = './db'  # Now acts as a base folder for FAISS index files
 EMBEDDING_MODEL = 'models/text-embedding-004'
 
-# Initialize embeddings and LLM
+# Initialize embeddings and LLM AFTER setting event loop
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
 embedding = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
+
+
 
 
 # User Authentication and Role Management
@@ -373,3 +384,4 @@ if __name__ == "__main__":
         print("Using existing vector stores from:", BASE_DB)
 
     main()
+
