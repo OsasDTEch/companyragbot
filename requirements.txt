@@ -6,4 +6,6 @@ chromadb
 python-dotenv
 unstructured
 pypdf
+faiss
+faiss-cpu
 tiktoken
