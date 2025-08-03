@@ -1,6 +1,6 @@
 streamlit
 langchain
-langchain-community
+langchain_community
 langchain-google-genai
 langchain-chroma
 chromadb
@@ -10,4 +10,5 @@ pypdf
 faiss
 faiss-cpu
 tiktoken
+
 
