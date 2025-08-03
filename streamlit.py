@@ -1,35 +1,32 @@
-# main.py - Complete RAG-based RBAC System
+# main.py - Complete RAG-based RBAC System with FAISS
 
 import os
 import streamlit as st
 from typing import List, Dict, Optional
-from langchain_chroma import Chroma
+
+# --- FAISS Imports ---
+from langchain_community.vectorstores import FAISS
+
+# --- LangChain Imports ---
 from langchain_community.document_loaders import DirectoryLoader, TextLoader, CSVLoader
-from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 import hashlib
-# llm_setup.py
-import os
 
+# --- LLM and Embedding Setup ---
 from dotenv import load_dotenv
-
 load_dotenv()
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
 # Configuration
 BASE_DOC_PATH = './docs'
-BASE_DB = './db'
-EMBEDDING_MODEL = 'mxbai-embed-large'
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-# You must have your GOOGLE_API_KEY set as an environment variable
-embedding = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
-
+BASE_DB = './db' # Now acts as a base folder for FAISS index files
+EMBEDDING_MODEL = 'models/text-embedding-004'
 
 # Initialize embeddings and LLM
-
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
+embedding = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
 
 
 # User Authentication and Role Management
@@ -50,8 +47,8 @@ class UserAuth:
         "mike_fin": ["finance"],
         "emma_mkt": ["marketing"],
         "engr": ["engineering"],
-        "admin": ["general", "marketing", "finance", "hr", "engineering"],  # C-Level access
-        "employee": ["general"]  # Employee level access
+        "admin": ["general", "marketing", "finance", "hr", "engineering"],
+        "employee": ["general"]
     }
 
     @staticmethod
@@ -91,12 +88,10 @@ class DocumentProcessor:
             print(f"Warning: Folder {folder_path} does not exist!")
             return []
 
-        files_in_dir = os.listdir(folder_path)
-        print(f"Processing {dept}: {files_in_dir}")
+        print(f"Processing {dept}: {os.listdir(folder_path)}")
 
         if dept == 'hr':
-            # Handle CSV files for HR department
-            for file in files_in_dir:
+            for file in os.listdir(folder_path):
                 if file.endswith('.csv'):
                     file_path = os.path.join(folder_path, file)
                     try:
@@ -107,7 +102,6 @@ class DocumentProcessor:
                     except Exception as e:
                         print(f"Error loading {file}: {e}")
         else:
-            # Handle markdown and text files for other departments
             try:
                 loader = DirectoryLoader(
                     folder_path,
@@ -119,7 +113,6 @@ class DocumentProcessor:
                 all_docs.extend(docs)
 
                 if not docs:
-                    # Fallback to all text files
                     loader = DirectoryLoader(
                         folder_path,
                         glob='**/*',
@@ -137,7 +130,6 @@ class DocumentProcessor:
         if not all_docs:
             return []
 
-        # Split documents into chunks
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=500,
             chunk_overlap=50
@@ -147,19 +139,19 @@ class DocumentProcessor:
 
     @staticmethod
     def setup_vector_stores():
-        """Initialize vector stores for all departments"""
+        """Initialize vector stores for all departments using FAISS"""
         for dept in DocumentProcessor.DEPARTMENTS:
             chunks = DocumentProcessor.load_and_split_documents(dept)
             if chunks:
-                persist_directory = f'{BASE_DB}/{dept}'
-                os.makedirs(persist_directory, exist_ok=True)
-
-                vectorstore = Chroma.from_documents(
-                    documents=chunks,
-                    embedding=embedding,
-                    persist_directory=persist_directory
-                )
-                print(f'✓ Setup vector store for {dept}: {len(chunks)} chunks')
+                db_file_path = os.path.join(BASE_DB, f'{dept}.faiss')
+                os.makedirs(BASE_DB, exist_ok=True)
+                
+                # Create a new FAISS index from documents
+                vectorstore = FAISS.from_documents(chunks, embedding)
+                
+                # Save the FAISS index to the file
+                vectorstore.save_local(db_file_path)
+                print(f'✓ Setup and saved FAISS vector store for {dept}: {len(chunks)} chunks')
 
 
 class RAGChatbot:
@@ -172,20 +164,21 @@ class RAGChatbot:
         self._setup_qa_chains()
 
     def _load_vector_stores(self):
-        """Load existing vector stores"""
+        """Load existing vector stores from FAISS files"""
         for dept in DocumentProcessor.DEPARTMENTS:
-            persist_directory = f'{BASE_DB}/{dept}'
-            if os.path.exists(persist_directory):
+            db_file_path = os.path.join(BASE_DB, f'{dept}.faiss')
+            if os.path.exists(db_file_path):
                 try:
-                    self.vector_stores[dept] = Chroma(
-                        persist_directory=persist_directory,
-                        embedding_function=embedding
+                    self.vector_stores[dept] = FAISS.load_local(
+                        db_file_path,
+                        embedding,
+                        allow_dangerous_deserialization=True # This is required for security on some versions
                     )
-                    print(f"✓ Loaded existing vector store for {dept}")
+                    print(f"✓ Loaded existing FAISS vector store for {dept}")
                 except Exception as e:
-                    print(f"Error loading vector store for {dept}: {e}")
+                    print(f"Error loading FAISS store for {dept}: {e}")
             else:
-                print(f"⚠️  No vector store found for {dept} at {persist_directory}")
+                print(f"⚠️  No FAISS vector store found for {dept} at {db_file_path}")
 
     def _setup_qa_chains(self):
         """Setup QA chains for each department"""
@@ -222,7 +215,6 @@ class RAGChatbot:
                 "accessible_departments": []
             }
 
-        # Search across all accessible departments
         all_results = []
         sources = []
 
@@ -236,7 +228,6 @@ class RAGChatbot:
                         "source_docs": result["source_documents"]
                     })
 
-                    # Extract source information
                     for doc in result["source_documents"]:
                         source_info = {
                             "department": role,
@@ -255,7 +246,6 @@ class RAGChatbot:
                 "accessible_departments": user_roles
             }
 
-        # Combine results from multiple departments
         combined_answer = self._combine_results(all_results, question)
 
         return {
@@ -269,7 +259,6 @@ class RAGChatbot:
         if len(results) == 1:
             return results[0]["answer"]
 
-        # For multiple departments, create a comprehensive response
         combined = f"Based on your access to multiple departments, here's what I found:\n\n"
 
         for result in results:
@@ -291,18 +280,15 @@ def main():
     st.title("🤖 Company RAG Chatbot")
     st.subheader("Role-Based Access Control System - Powered by Osass")
 
-    # Initialize chatbot
     if 'chatbot' not in st.session_state:
         with st.spinner("Initializing RAG system..."):
             st.session_state.chatbot = RAGChatbot()
 
-    # Authentication
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
 
     if not st.session_state.authenticated:
         st.subheader("🔐 Login")
-
         col1, col2 = st.columns([1, 2])
 
         with col1:
@@ -323,7 +309,7 @@ def main():
             st.info("""
             **Demo Accounts:**
             - **jane_hr** / hr123 (HR Manager)
-            - **mike_fin** / fin123 (Finance Director)  
+            - **mike_fin** / fin123 (Finance Director)
             - **emma_mkt** / mkt123 (Marketing Manager)
             - **engr** / eng123 (Senior Engineer)
             - **admin** / admin123 (CEO - Full Access)
@@ -331,10 +317,7 @@ def main():
             """)
 
     else:
-        # Main Chat Interface
         user_info = st.session_state.user_info
-
-        # Sidebar with user info
         with st.sidebar:
             st.subheader("👤 User Profile")
             st.write(f"**Name:** {user_info['name']}")
@@ -348,14 +331,10 @@ def main():
                         del st.session_state[key]
                 st.rerun()
 
-        # Chat Interface
         st.subheader(f"💬 Hello {user_info['name']}! How can I help you today?")
-
-        # Initialize chat history
         if 'messages' not in st.session_state:
             st.session_state.messages = []
 
-        # Display chat history
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
@@ -365,38 +344,29 @@ def main():
                             st.write(f"**{source['department'].title()}:** {source['source']}")
                             st.caption(source['content_preview'])
 
-        # Chat input
         if prompt := st.chat_input("Ask me anything about the company..."):
-            # Add user message
             st.session_state.messages.append({"role": "user", "content": prompt})
 
             with st.chat_message("user"):
                 st.markdown(prompt)
 
-            # Generate response
             with st.chat_message("assistant"):
                 with st.spinner("Searching company knowledge base..."):
                     result = st.session_state.chatbot.query(prompt, user_info['roles'])
-
                     st.markdown(result["answer"])
-
                     if result["sources"]:
                         with st.expander("📚 Sources"):
                             for source in result["sources"]:
                                 st.write(f"**{source['department'].title()}:** {source['source']}")
                                 st.caption(source['content_preview'])
-
-                    # Add assistant message
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": result["answer"],
                         "sources": result["sources"]
                     })
 
-
 if __name__ == "__main__":
-    # Only setup vector stores if they don't exist
-    if not os.path.exists(BASE_DB):
+    if not os.path.exists(os.path.join(BASE_DB, 'hr.faiss')):
         print("No existing vector stores found. Setting up new ones...")
         DocumentProcessor.setup_vector_stores()
     else:
