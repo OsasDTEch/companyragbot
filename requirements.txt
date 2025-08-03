@@ -9,3 +9,4 @@ unstructured
 pypdf
 faiss-cpu
 tiktoken
+asyncio
